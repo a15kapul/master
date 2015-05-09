@@ -50,6 +50,9 @@ extern "C"
 #include <libavutil/pixdesc.h>
 }
 
+#include "opencv2/core/core.hpp"
+
+
 static AVFormatContext* _inputFormatCtx;
 static AVFormatContext* _outputFormatCtx;
 typedef struct FilteringContext {
@@ -497,6 +500,10 @@ int main(int argc, char **argv)
     int gotFrame;
     int(*decodeFunc)(AVCodecContext *, AVFrame *, int *, const AVPacket *);
 
+	double startTick, endTick, duration;
+	startTick = static_cast<double>(cv::getTickCount());
+
+
 #ifdef RUN_WITH_ARGS
     if (argc != 3) {
         av_log(NULL, AV_LOG_ERROR, "Usage: %s <input file> <output file>\n", argv[0]);
@@ -618,6 +625,10 @@ end:
     if (ret < 0)
         //av_log(NULL, AV_LOG_ERROR, "Error occurred: %s\n", av_err2str(ret));
         av_log(NULL, AV_LOG_ERROR, "Error occurred!!!\n");
+
+	endTick = static_cast<double>(cv::getTickCount());
+	duration = ((endTick - startTick) / cv::getTickFrequency());
+	av_log(NULL, AV_LOG_WARNING, "Time Elapsed: %.2f sec.\n", duration);
 
     return ret ? 1 : 0;
 }
