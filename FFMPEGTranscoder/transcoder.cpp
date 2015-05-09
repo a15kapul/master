@@ -271,47 +271,42 @@ static int init_filter(FilteringContext* fctx, AVCodecContext *dec_ctx,
             goto end;
         }
 
-        if (!dec_ctx->channel_layout)
-            dec_ctx->channel_layout =
-            av_get_default_channel_layout(dec_ctx->channels);
+        if (!dec_ctx->channel_layout) {
+            dec_ctx->channel_layout = av_get_default_channel_layout(dec_ctx->channels);
+        }
         snprintf(args, sizeof(args),
             "time_base=%d/%d:sample_rate=%d:sample_fmt=%s:channel_layout=0x%"PRIx64,
             dec_ctx->time_base.num, dec_ctx->time_base.den, dec_ctx->sample_rate,
             av_get_sample_fmt_name(dec_ctx->sample_fmt),
             dec_ctx->channel_layout);
-        ret = avfilter_graph_create_filter(&bufferSrcCtx, bufferSrc, "in",
-            args, NULL, filterGraph);
+        ret = avfilter_graph_create_filter(&bufferSrcCtx, bufferSrc, "in", args, NULL, filterGraph);
         if (ret < 0) {
             av_log(NULL, AV_LOG_ERROR, "Cannot create audio buffer source\n");
             goto end;
         }
 
-        ret = avfilter_graph_create_filter(&bufferSinkCtx, bufferSink, "out",
-            NULL, NULL, filterGraph);
+        ret = avfilter_graph_create_filter(&bufferSinkCtx, bufferSink, "out", NULL, NULL, filterGraph);
         if (ret < 0) {
             av_log(NULL, AV_LOG_ERROR, "Cannot create audio buffer sink\n");
             goto end;
         }
 
-        ret = av_opt_set_bin(bufferSinkCtx, "sample_fmts",
-            (uint8_t*)&enc_ctx->sample_fmt, sizeof(enc_ctx->sample_fmt),
-            AV_OPT_SEARCH_CHILDREN);
+        ret = av_opt_set_bin(bufferSinkCtx, "sample_fmts", (uint8_t*)&enc_ctx->sample_fmt, 
+            sizeof(enc_ctx->sample_fmt), AV_OPT_SEARCH_CHILDREN);
         if (ret < 0) {
             av_log(NULL, AV_LOG_ERROR, "Cannot set output sample format\n");
             goto end;
         }
 
-        ret = av_opt_set_bin(bufferSinkCtx, "channel_layouts",
-            (uint8_t*)&enc_ctx->channel_layout,
+        ret = av_opt_set_bin(bufferSinkCtx, "channel_layouts", (uint8_t*)&enc_ctx->channel_layout,
             sizeof(enc_ctx->channel_layout), AV_OPT_SEARCH_CHILDREN);
         if (ret < 0) {
             av_log(NULL, AV_LOG_ERROR, "Cannot set output channel layout\n");
             goto end;
         }
 
-        ret = av_opt_set_bin(bufferSinkCtx, "sample_rates",
-            (uint8_t*)&enc_ctx->sample_rate, sizeof(enc_ctx->sample_rate),
-            AV_OPT_SEARCH_CHILDREN);
+        ret = av_opt_set_bin(bufferSinkCtx, "sample_rates", (uint8_t*)&enc_ctx->sample_rate, 
+            sizeof(enc_ctx->sample_rate), AV_OPT_SEARCH_CHILDREN);
         if (ret < 0) {
             av_log(NULL, AV_LOG_ERROR, "Cannot set output sample rate\n");
             goto end;
@@ -374,6 +369,8 @@ static int init_filters(void)
             || _inputFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO))
             continue;
 
+        if (_inputFormatCtx->streams[i]->codec->codec_id == _outputFormatCtx->streams[i]->codec->codec_id)
+            continue;
 
         if (_inputFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO)
             filterSpec = "null"; /* passthrough (dummy) filter for video */
@@ -500,8 +497,8 @@ int main(int argc, char **argv)
     int gotFrame;
     int(*decodeFunc)(AVCodecContext *, AVFrame *, int *, const AVPacket *);
 
-	double startTick, endTick, duration;
-	startTick = static_cast<double>(cv::getTickCount());
+    double startTick, endTick, duration;
+    startTick = static_cast<double>(cv::getTickCount());
 
 
 #ifdef RUN_WITH_ARGS
@@ -542,6 +539,7 @@ int main(int argc, char **argv)
         av_log(NULL, AV_LOG_DEBUG, "Demuxer gave frame of stream_index %u\n",
             streamIndex);
 
+        // TODO: find right condition for reencode and filter (prob codec_id is enough)
         if (_filterCtx[streamIndex].FilterGraph) {
             av_log(NULL, AV_LOG_DEBUG, "Going to reencode&filter the frame\n");
             frame = av_frame_alloc();
@@ -626,9 +624,9 @@ end:
         //av_log(NULL, AV_LOG_ERROR, "Error occurred: %s\n", av_err2str(ret));
         av_log(NULL, AV_LOG_ERROR, "Error occurred!!!\n");
 
-	endTick = static_cast<double>(cv::getTickCount());
-	duration = ((endTick - startTick) / cv::getTickFrequency());
-	av_log(NULL, AV_LOG_WARNING, "Time Elapsed: %.2f sec.\n", duration);
+    endTick = static_cast<double>(cv::getTickCount());
+    duration = ((endTick - startTick) / cv::getTickFrequency());
+    av_log(NULL, AV_LOG_WARNING, "Time Elapsed: %.2f sec.\n", duration);
 
     return ret ? 1 : 0;
 }
