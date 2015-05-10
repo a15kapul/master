@@ -46,7 +46,14 @@ extern "C" {
 #define NUM_OF_STREAMS 2
 
 
+
+/*  ====== GLOBAL VARIABLES ======  */
 static AVFormatContext* _inputFormatContexts[NUM_OF_STREAMS];
+static AVFormatContext* _outputFormatContext;
+
+
+
+
 static void log_packet(const AVFormatContext *fmt_ctx, const AVPacket *pkt, const char *tag)
 {
     AVRational *time_base = &fmt_ctx->streams[pkt->stream_index]->time_base;
@@ -97,11 +104,9 @@ static int open_input_file2(const char *filename, AVFormatContext** input_format
         stream = (*input_format_ctx)->streams[i];
         codecCtx = stream->codec;
         /* Reencode video & audio and remux subtitles etc. */
-        if (codecCtx->codec_type == AVMEDIA_TYPE_VIDEO
-            || codecCtx->codec_type == AVMEDIA_TYPE_AUDIO) {
+        if (codecCtx->codec_type == AVMEDIA_TYPE_VIDEO || codecCtx->codec_type == AVMEDIA_TYPE_AUDIO) {
             /* Open decoder */
-            ret = avcodec_open2(codecCtx,
-                avcodec_find_decoder(codecCtx->codec_id), NULL);
+            ret = avcodec_open2(codecCtx, avcodec_find_decoder(codecCtx->codec_id), NULL);
             if (ret < 0) {
                 av_log(NULL, AV_LOG_ERROR, "Failed to open decoder for stream #%u\n", i);
                 return ret;
@@ -113,6 +118,43 @@ static int open_input_file2(const char *filename, AVFormatContext** input_format
     return 0;
 }
 
+static int setup_mp3_audio_codec(AVFormatContext* out_fmt_ctx)
+{
+    AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_MP3);
+    if (!codec) {
+        fprintf(stderr, "Codec not found\n");
+        exit(1);
+    }
+
+    AVStream *out_stream = avformat_new_stream(out_fmt_ctx, codec);
+    AVCodecContext *codecCtx = out_stream->codec;
+    /* put sample parameters */
+    codecCtx->bit_rate = 64000;
+
+    /* check that the encoder supports s16 pcm input */
+    codecCtx->sample_fmt = AV_SAMPLE_FMT_S16P;
+    if (!check_sample_fmt(codec, codecCtx->sample_fmt)) {
+        fprintf(stderr, "Encoder does not support sample format %s",
+            av_get_sample_fmt_name(codecCtx->sample_fmt));
+        exit(1);
+    }
+
+    /* select other audio parameters supported by the encoder */
+    codecCtx->sample_rate = 44100;
+    codecCtx->channel_layout = AV_CH_LAYOUT_STEREO;
+    codecCtx->channels = av_get_channel_layout_nb_channels(codecCtx->channel_layout);
+
+    /* open it */
+    if (avcodec_open2(codecCtx, codec, NULL) < 0) {
+        fprintf(stderr, "Could not open codec\n");
+        exit(1);
+    }
+
+    out_stream->codec->codec_tag = 0;
+    if (out_fmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
+        out_stream->codec->flags |= CODEC_FLAG_GLOBAL_HEADER;
+
+}
 
 
 #ifdef REMUXING
@@ -140,42 +182,16 @@ int main_dummy(int argc, char **argv)
     out_filename = argv[3];
 
     av_register_all();
-    /* =============== VIDEO STREAM ================*/
 
-    //if ((ret = open_input_file2(argv[1])) < 0)
-    //    goto end;
+    /* =============== OPEN STREAMS ================*/
 
-
-    if ((ret = avformat_open_input(&inVideoFmtCtx, inVideo_filename, 0, 0)) < 0) {
-        fprintf(stderr, "Could not open input file '%s'", inVideo_filename);
+    if ((ret = open_input_file2(argv[1], &inVideoFmtCtx)) < 0)
         goto end;
-    }
 
-    if ((ret = avformat_find_stream_info(inVideoFmtCtx, 0)) < 0) {
-        fprintf(stderr, "Failed to retrieve input stream information");
+    if ((ret = open_input_file2(argv[2], &inAudioFmtCtx)) < 0)
         goto end;
-    }
 
-    av_dump_format(inVideoFmtCtx, 0, inVideo_filename, 0);
-
-
-
-    /* =============== AUDIO STREAM ================*/
-
-    //if ((ret = open_output_file2(argv[2])) < 0)
-    //    goto end;
-    if ((ret = avformat_open_input(&inAudioFmtCtx, inAudio_filename, 0, 0)) < 0) {
-        fprintf(stderr, "Could not open input file '%s'", inAudio_filename);
-        goto end;
-    }
-
-    if ((ret = avformat_find_stream_info(inAudioFmtCtx, 0)) < 0) {
-        fprintf(stderr, "Failed to retrieve input stream information");
-        goto end;
-    }
-
-    av_dump_format(inAudioFmtCtx, 0, inAudio_filename, 0);
-
+    /* ========== ALLOCATE OUTPUT CONTEXT ==========*/
 
     avformat_alloc_output_context2(&outFmtCtx, NULL, NULL, out_filename);
     if (!outFmtCtx) {
@@ -187,7 +203,7 @@ int main_dummy(int argc, char **argv)
     ofmt = outFmtCtx->oformat;
 
 
-    /* =============== VIDEO STREAM ================*/
+    /* =============== SETUP VIDEO CODEC ================*/
     for (i = 0; i < inVideoFmtCtx->nb_streams; i++) {
         AVStream *in_stream = inVideoFmtCtx->streams[i];
         AVStream *out_stream = avformat_new_stream(outFmtCtx, in_stream->codec->codec);
@@ -207,63 +223,9 @@ int main_dummy(int argc, char **argv)
             out_stream->codec->flags |= CODEC_FLAG_GLOBAL_HEADER;
     }
 
-    /* =============== AUDIO STREAM ================*/
+    /* =============== SETUP AUDIO CODEC ================*/
     for (i = 0; i < inAudioFmtCtx->nb_streams; i++) {
-        AVStream *in_stream = inAudioFmtCtx->streams[i];
-#if 1
-        AVStream *out_stream = avformat_new_stream(outFmtCtx, in_stream->codec->codec);
-        if (!out_stream) {
-            fprintf(stderr, "Failed allocating output stream\n");
-            ret = AVERROR_UNKNOWN;
-            goto end;
-        }
-
-
-        // Duplicate codec from input stream
-        ret = avcodec_copy_context(out_stream->codec, in_stream->codec);
-        if (ret < 0) {
-            fprintf(stderr, "Failed to copy context from input to output stream codec context\n");
-            goto end;
-        }
-#else
-
-        // Allocate MP3 codec
-        AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_MP3);
-        if (!codec) {
-            fprintf(stderr, "Codec not found\n");
-            exit(1);
-        }
-
-        AVStream *out_stream = avformat_new_stream(outFmtCtx, codec);
-        AVCodecContext *codecCtx = out_stream->codec;
-        /* put sample parameters */
-        codecCtx->bit_rate = 64000;
-
-        /* check that the encoder supports s16 pcm input */
-        codecCtx->sample_fmt = AV_SAMPLE_FMT_S16P;
-        if (!check_sample_fmt(codec, codecCtx->sample_fmt)) {
-            fprintf(stderr, "Encoder does not support sample format %s",
-                av_get_sample_fmt_name(codecCtx->sample_fmt));
-            exit(1);
-        }
-
-        /* select other audio parameters supported by the encoder */
-        codecCtx->sample_rate = 44100;
-        codecCtx->channel_layout = AV_CH_LAYOUT_STEREO;
-        codecCtx->channels = av_get_channel_layout_nb_channels(codecCtx->channel_layout);
-
-        /* open it */
-        if (avcodec_open2(codecCtx, codec, NULL) < 0) {
-            fprintf(stderr, "Could not open codec\n");
-            exit(1);
-        }
-
-#endif // COPY/ALLOCATE codec context
-
-
-        out_stream->codec->codec_tag = 0;
-        if (outFmtCtx->oformat->flags & AVFMT_GLOBALHEADER)
-            out_stream->codec->flags |= CODEC_FLAG_GLOBAL_HEADER;
+        setup_mp3_audio_codec(outFmtCtx);
     }
 
     av_dump_format(outFmtCtx, 0, out_filename, 1);
@@ -282,8 +244,9 @@ int main_dummy(int argc, char **argv)
         goto end;
     }
 
-    while (1) {
-        AVStream *in_stream, *out_stream;
+    AVStream *in_stream, *out_stream;
+
+    while (1) {        
 
         /* =============== VIDEO STREAM ================*/
         ret = av_read_frame(inVideoFmtCtx, &pkt);
@@ -309,7 +272,8 @@ int main_dummy(int argc, char **argv)
         }
         av_free_packet(&pkt);
 
-
+    }
+    while (1) {
         /* =============== AUDIO STREAM ================*/
 
         ret = av_read_frame(inAudioFmtCtx, &pkt);
@@ -317,93 +281,10 @@ int main_dummy(int argc, char **argv)
             break;
         in_stream = inAudioFmtCtx->streams[pkt.stream_index];
 
-#if 0
-        AVCodec *aCodec = avcodec_find_decoder(in_stream->codec->codec_id);
-        if (!aCodec) {
-            fprintf(stderr, "Unsupported codec!\n");
-            return -1;
-        }
-        // Copy context
-        AVCodecContext *inAudioCodecCtx = avcodec_alloc_context3(aCodec);
-        if (avcodec_copy_context(inAudioCodecCtx, in_stream->codec) != 0) {
-            fprintf(stderr, "Couldn't copy codec context");
-            return -1; // Error copying codec context
-        }
-        avcodec_open2(inAudioCodecCtx, aCodec, NULL);
-
-        /* frame containing input raw audio */
-        AVFrame *decodedFrame = av_frame_alloc();
-        if (!decodedFrame) {
-            fprintf(stderr, "Could not allocate audio frame\n");
-            exit(1);
-        }
-        int gotFrame;
-        int bytesDecoded = avcodec_decode_audio4(inAudioCodecCtx, decodedFrame, &gotFrame, &pkt);
-#endif // 0
-
-
         pkt.stream_index++;
         out_stream = outFmtCtx->streams[pkt.stream_index];
 
         log_packet(inAudioFmtCtx, &pkt, "in");
-
-#if 0
-        /* frame containing input raw audio */
-        AVFrame *frame2Encode = av_frame_alloc();
-        if (!frame2Encode) {
-            fprintf(stderr, "Could not allocate audio frame\n");
-            exit(1);
-        }
-        frame2Encode->nb_samples = out_stream->codec->frame_size;
-        frame2Encode->format = out_stream->codec->sample_fmt;
-        frame2Encode->channel_layout = out_stream->codec->channel_layout;
-#endif // 0
-
-
-#if 0
-        /* the codec gives us the frame size, in samples,
-        * we calculate the size of the samples buffer in bytes */
-        int buffer_size = av_samples_get_buffer_size(NULL, out_stream->codec->channels, out_stream->codec->frame_size,
-            out_stream->codec->sample_fmt, 0);
-        if (buffer_size < 0) {
-            fprintf(stderr, "Could not get sample buffer size\n");
-            exit(1);
-        }
-        uint16_t *samples = (uint16_t*)(av_malloc(buffer_size));
-        if (!samples) {
-            fprintf(stderr, "Could not allocate %d bytes for samples buffer\n",
-                buffer_size);
-            exit(1);
-        }
-        /* setup the data pointers in the AVFrame */
-        ret = avcodec_fill_audio_frame(frame2Encode, out_stream->codec->channels, out_stream->codec->sample_fmt,
-            (const uint8_t*)samples, buffer_size, 0);
-        if (ret < 0) {
-            fprintf(stderr, "Could not setup audio frame\n");
-            exit(1);
-        }
-#endif // 0
-
-#if 0
-        AVPacket encodedPacket;
-        int gotPacket;
-        av_init_packet(&encodedPacket);
-        encodedPacket.data = NULL; // packet data will be allocated by the encoder
-        encodedPacket.size = 0;
-        for (;;)
-        {
-            int success = avcodec_encode_audio2(out_stream->codec, &encodedPacket, decodedFrame, &gotPacket);
-            ret = av_read_frame(inAudioFmtCtx, &pkt);
-            if (ret < 0 || gotPacket)
-            {
-                break;
-            }
-            else
-            {
-                bytesDecoded = avcodec_decode_audio4(inAudioCodecCtx, decodedFrame, &gotFrame, &pkt);
-            }
-        }
-#endif // 0
 
         /* copy packet */
         pkt.pts = av_rescale_q_rnd(pkt.pts, in_stream->time_base, out_stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
