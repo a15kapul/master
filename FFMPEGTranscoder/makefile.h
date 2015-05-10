@@ -2,7 +2,7 @@
 #define MAKEFILE_H
 
 #define MUXING_
-#define REMUXING_
-#define TRANSCODING
+#define REMUXING
+#define TRANSCODING_
 
 #endif // MAKEFILE_H

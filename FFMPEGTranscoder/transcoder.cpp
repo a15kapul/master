@@ -28,7 +28,6 @@
 * @example transcoding.c
 */
 #include "makefile.h"
-#ifdef TRANSCODING
 
 
 #if _MSC_VER
@@ -484,7 +483,11 @@ static int flush_encoder(unsigned int stream_index)
     return ret;
 }
 
+#ifdef TRANSCODING
 int main(int argc, char **argv)
+#else
+int main_dummy(int argc, char **argv)
+#endif
 {
     int ret;
     AVPacket packet;
@@ -630,4 +633,3 @@ end:
 
     return ret ? 1 : 0;
 }
-#endif

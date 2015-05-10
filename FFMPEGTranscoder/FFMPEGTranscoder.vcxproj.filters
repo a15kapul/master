@@ -18,9 +18,15 @@
     <ClCompile Include="transcoder.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="remuxer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="makefile.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="StreamMuxer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

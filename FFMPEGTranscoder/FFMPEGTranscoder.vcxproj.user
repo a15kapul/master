@@ -3,5 +3,6 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LocalDebuggerWorkingDirectory>C:\E\Data\AudioMuxingTest</LocalDebuggerWorkingDirectory>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+    <LocalDebuggerCommandArguments>bayern-pano.mkv panther.mp3 pano_mp3_sound.mp4</LocalDebuggerCommandArguments>
   </PropertyGroup>
 </Project>

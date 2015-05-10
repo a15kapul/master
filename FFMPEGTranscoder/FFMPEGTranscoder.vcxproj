@@ -149,10 +149,12 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="remuxer.cpp" />
     <ClCompile Include="transcoder.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="makefile.h" />
+    <ClInclude Include="StreamMuxer.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
