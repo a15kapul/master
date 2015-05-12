@@ -45,6 +45,8 @@ extern "C" {
 #include <libavfilter/avfilter.h>
 #include <libavfilter/avfiltergraph.h>
 #include <libavutil/opt.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
 }
 #define NUM_OF_STREAMS 2
 
@@ -299,12 +301,89 @@ static int init_filters(AVFormatContext* input_context, AVFormatContext* output_
                 filterSpec = "null"; /* passthrough (dummy) filter for video */
             else
                 filterSpec = "anull"; /* passthrough (dummy) filter for audio */
-            ret = init_filter(&_filterCtx[i], input_context->streams[i]->codec, output_context->streams[i]->codec, filterSpec);
+            ret = init_filter(&_filterCtx[i], input_context->streams[i]->codec, output_context->streams[i+1]->codec, filterSpec);
             if (ret)
                 return ret;
 
     }
     return 0;
+}
+
+static int encode_write_frame(AVFrame *filt_frame, AVFormatContext* in_format_ctx, AVFormatContext* out_format_ctx, unsigned int stream_index, int *got_frame) {
+    int ret;
+    int gotFrameLocal;
+    AVPacket encPkt;
+
+    if (!got_frame)
+        got_frame = &gotFrameLocal;
+
+    av_log(NULL, AV_LOG_INFO, "Encoding frame\n");
+    /* encode filtered frame */
+    encPkt.data = NULL;
+    encPkt.size = 0;
+    av_init_packet(&encPkt);
+    ret = avcodec_encode_audio2(out_format_ctx->streams[stream_index + 1]->codec, &encPkt,
+        filt_frame, got_frame);
+    av_frame_free(&filt_frame);
+    if (ret < 0)
+        return ret;
+    if (!(*got_frame))
+        return 0;
+
+    /* prepare packet for muxing */
+    encPkt.stream_index = stream_index;
+    av_packet_rescale_ts(&encPkt,
+        out_format_ctx->streams[stream_index+1]->codec->time_base,
+        out_format_ctx->streams[stream_index+1]->time_base);
+
+    av_log(NULL, AV_LOG_DEBUG, "Muxing frame\n");
+    /* mux encoded frame */
+    ret = av_interleaved_write_frame(out_format_ctx, &encPkt);
+    return ret;
+}
+
+static int filter_encode_write_frame(AVFrame *frame, AVFormatContext* in_format_ctx, AVFormatContext* out_format_ctx, unsigned int stream_index)
+{
+    int ret;
+    AVFrame *filtFrame;
+
+    av_log(NULL, AV_LOG_INFO, "Pushing decoded frame to filters\n");
+    /* push the decoded frame into the filtergraph */
+    ret = av_buffersrc_add_frame_flags(_filterCtx[stream_index].BuffersrcCtx,
+        frame, 0);
+    if (ret < 0) {
+        av_log(NULL, AV_LOG_ERROR, "Error while feeding the filtergraph\n");
+        return ret;
+    }
+
+    /* pull filtered frames from the filtergraph */
+    while (1) {
+        filtFrame = av_frame_alloc();
+        if (!filtFrame) {
+            ret = AVERROR(ENOMEM);
+            break;
+        }
+        av_log(NULL, AV_LOG_INFO, "Pulling filtered frame from filters\n");
+        ret = av_buffersink_get_frame(_filterCtx[stream_index].BuffersinkCtx,
+            filtFrame);
+        if (ret < 0) {
+            /* if no more frames for output - returns AVERROR(EAGAIN)
+            * if flushed and no more frames for output - returns AVERROR_EOF
+            * rewrite retcode to 0 to show it as normal procedure completion
+            */
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+                ret = 0;
+            av_frame_free(&filtFrame);
+            break;
+        }
+
+        filtFrame->pict_type = AV_PICTURE_TYPE_NONE;
+        ret = encode_write_frame(filtFrame, in_format_ctx, out_format_ctx, stream_index, NULL);
+        if (ret < 0)
+            break;
+    }
+
+    return ret;
 }
 
 static int setup_mp3_audio_codec(AVFormatContext* out_fmt_ctx)
@@ -438,6 +517,7 @@ int main_dummy(int argc, char **argv)
     init_filters(inAudioFmtCtx, outFmtCtx);
 
     AVStream *in_stream, *out_stream;
+    AVFrame* frame;
 
     while (1) {        
 
@@ -454,7 +534,7 @@ int main_dummy(int argc, char **argv)
         /* copy packet */
         pkt.pts = av_rescale_q_rnd(pkt.pts, in_stream->time_base, out_stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
         pkt.dts = av_rescale_q_rnd(pkt.dts, in_stream->time_base, out_stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
-        pkt.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
+        pkt.duration = (int)av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
         pkt.pos = -1;
         log_packet(outFmtCtx, &pkt, "out");
 
@@ -468,6 +548,7 @@ int main_dummy(int argc, char **argv)
 
         /* =============== AUDIO STREAM ================*/
 
+#if 0
         ret = av_read_frame(inAudioFmtCtx, &pkt);
         if (ret < 0)
             break;
@@ -491,10 +572,69 @@ int main_dummy(int argc, char **argv)
             break;
         }
         av_free_packet(&pkt);
+#else
+
+        if ((ret = av_read_frame(inAudioFmtCtx, &pkt)) < 0)
+            break;
+        int streamIndex = pkt.stream_index;
+        int gotFrame;
+
+        if (_filterCtx[streamIndex].FilterGraph) {
+            av_log(NULL, AV_LOG_DEBUG, "Going to reencode&filter the frame\n");
+            frame = av_frame_alloc();
+            if (!frame) {
+                ret = AVERROR(ENOMEM);
+                break;
+            }
+            av_packet_rescale_ts(&pkt, inAudioFmtCtx->streams[streamIndex]->time_base,
+                inAudioFmtCtx->streams[streamIndex]->codec->time_base);
+            ret = avcodec_decode_audio4(inAudioFmtCtx->streams[streamIndex]->codec, frame,
+                &gotFrame, &pkt);
+            if (ret < 0) {
+                av_frame_free(&frame);
+                av_log(NULL, AV_LOG_ERROR, "Decoding failed\n");
+                break;
+            }
+
+            if (gotFrame) {
+                frame->pts = av_frame_get_best_effort_timestamp(frame);
+                ret = filter_encode_write_frame(frame, inAudioFmtCtx, outFmtCtx, streamIndex);
+                av_frame_free(&frame);
+                if (ret < 0)
+                    goto end;
+            }
+            else {
+                av_frame_free(&frame);
+            }
+        }
+        else {
+            /* remux this frame without reencoding */
+            av_packet_rescale_ts(&pkt,
+                inAudioFmtCtx->streams[streamIndex]->time_base,
+                outFmtCtx->streams[streamIndex+1]->time_base);
+
+            ret = av_interleaved_write_frame(outFmtCtx, &pkt);
+            if (ret < 0)
+                goto end;
+        }
+        av_free_packet(&pkt);
+#endif // 0
+
     }
 
     av_write_trailer(outFmtCtx);
 end:
+
+    av_free_packet(&pkt);
+    av_frame_free(&frame);
+    for (i = 0; i < inAudioFmtCtx->nb_streams; i++) {
+        avcodec_close(inAudioFmtCtx->streams[i]->codec);
+        if (outFmtCtx && outFmtCtx->nb_streams > i && outFmtCtx->streams[i] && outFmtCtx->streams[i]->codec)
+            avcodec_close(outFmtCtx->streams[i]->codec);
+        if (_filterCtx && _filterCtx[i].FilterGraph)
+            avfilter_graph_free(&_filterCtx[i].FilterGraph);
+    }
+    av_free(_filterCtx);
 
     avformat_close_input(&inVideoFmtCtx);
     avformat_close_input(&inAudioFmtCtx);
